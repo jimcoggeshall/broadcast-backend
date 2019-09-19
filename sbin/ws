@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+
+import asyncio
+import datetime
+import random
+import websockets
+import wikiquote
+
+import dateutil.parser
+import datetime
+import time
+import json
+from rocketchat_API.rocketchat import RocketChat
+import subprocess
+
+class Messenger:
+
+    _rocket = RocketChat(auth_token="XXXXXXXXXXXXXXXXXX", user_id="XXXXXXXXXXXXXXXXXX")
+    _users = {"broadcast-bot"}
+    _vip_users = {"jimcoggeshall"}
+
+    def __init__(self, lock):
+        self._lock = lock
+        self._recent_fetch = datetime.datetime.now()
+        self._messages = {
+            json.dumps(m) 
+            for m in self._rocket.channels_history("XXXXXXXXXXXXXXXXXX", count=1000).json().get("messages")
+        }
+
+    async def _receive_messages(self):
+        now = datetime.datetime.now()
+        if (now - self._recent_fetch).total_seconds() < 15:
+            return
+        with await self._lock:
+            self._recent_fetch = datetime.datetime.now()
+            resp = self._rocket.channels_history("XXXXXXXXXXXXXXXXXX", count=1000)
+            resp_str = {json.dumps(m) for m in resp.json().get("messages")}
+            self._messages = resp_str
+
+    async def current_messages(self):
+        try:
+            await asyncio.wait_for(self._receive_messages(), timeout=1)
+        except asyncio.TimeoutError:
+            pass
+
+        now = datetime.datetime.now()
+        messages = []
+        vip_messages = []
+        for s in self._messages:
+            m = json.loads(s)
+            ts = dateutil.parser.parse(m.get("ts")).replace(tzinfo=None)
+            seconds_diff = (now - ts).total_seconds()
+            user = m.get("u", {}).get("username", "")
+            if seconds_diff < 3600 and user in self._users:
+                messages.append(json.dumps(m))
+            if seconds_diff < 3600 and user in self._vip_users:
+                vip_messages.append(json.dumps(m))
+
+        def dt_sort(x):
+            try:
+                return dateutil.parser.parse(json.loads(x).get("ts"))
+            except:
+                return 0
+
+        if len(vip_messages) > 0:
+            if not json.loads(sorted(vip_messages, key=dt_sort)[-1]).get("msg", "").strip().lower() == "clear":
+                messages = vip_messages
+
+        if len(messages) == 0:
+            messages = [""]
+        return [sorted(messages, key=dt_sort)[-1]]
+
+
+
+def main():
+    
+    lock = asyncio.Lock()
+    messenger = Messenger(lock)
+
+    async def broadcast(websocket, path):
+        ids_sent = set()
+        while True:
+            messages_now_json = await messenger.current_messages()
+            messages_now_parsed = [json.loads(m) for m in messages_now_json]
+            messages_now = [m for m in messages_now_parsed if not m.get("_id") in ids_sent]
+            for message in messages_now:
+                id_message = message.get("_id", "")
+                if not id_message == "":
+                    ids_sent.add(id_message)
+                await websocket.send(message.get("msg"))
+                await asyncio.sleep(1)
+
+
+    start_server = websockets.serve(broadcast, "127.0.0.1", 9080)
+
+    asyncio.get_event_loop().run_until_complete(start_server)
+    asyncio.get_event_loop().run_forever()
+
+    return 1
+
+
+if __name__ == "__main__":
+    main()

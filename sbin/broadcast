@@ -1,0 +1,6 @@
+#!/bin/bash
+
+while true; do 
+    shuf -n 1 <(cat <(shuf -n 20 /home/jcc/var/message.txt) <(shuf -n 5 /home/jcc/var/message.hf.txt)) > /var/local/FH
+    sleep 45
+done
